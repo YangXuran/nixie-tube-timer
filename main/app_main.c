@@ -187,29 +187,25 @@ static void timer_task(void* arg)
     while (1) {
         for (int i = 0; i < 2; i++) {
             if (gpio_get_level(timer_dev[i].gpio) == 0) {
-                if (timer_dev[i].status != DEV_TIMINHG) {
+                if (get_tube_init_status(1) == 0 && timer_dev[i ? 0 : 1].status == DEV_TIMINHG) {
+                    ESP_LOGI(TAG, "sw%d trigger, but sw%d is timing", i, i ? 0 : 1);
+                    continue;
+                } else if (timer_dev[i].status != DEV_TIMINHG) {
                     timer_dev[i].status = DEV_TIMINHG;
                     timer_dev[i].cnt = 0;
                     timer_dev[i].time = 0;
-                    ESP_LOGI(TAG, "sw%d trigger low", i);
-                    if (i == 1 && (get_tube_init_status(i) == 0)) {
-                        if (timer_dev[0].status == DEV_TIMINHG)
-                            continue;
-                        else
-                            tube_show_num_with_trans(0, 0);
-                    }
-                    tube_show_num_with_trans(i, 0);
+                    ESP_LOGI(TAG, "sw%d start timing", i);
                 }
-                if (xSemaphoreTake(timer_dev[i].sem, 10)) {
-                    if (i == 1 && (get_tube_init_status(i) == 0)) {
-                        if (timer_dev[0].status == DEV_TIMINHG)
-                            continue;
-                        else
-                            tube_show_num_with_trans(0, timer_dev[i].time);
-                    } else {
-                        tube_show_num_with_trans(i, timer_dev[i].time);
-                    }
+
+                if (get_tube_init_status(1) == 0) {
+                    if (timer_dev[i ? 0 : 1].status == DEV_TIMINHG)
+                        continue;
+                    else
+                        tube_show_num_with_trans(0, timer_dev[i].time);
+                } else {
+                    tube_show_num_with_trans(i, timer_dev[i].time);
                 }
+
                 timer_dev[i].timeout = 0;
                 if (i == 1 && (get_tube_init_status(i) == 0)) {
                     timer_dev[0].timeout = 0;
@@ -236,6 +232,7 @@ static void timer_task(void* arg)
 
 static void led_task(void* arg)
 {
+    int ch;
     static uint32_t last_status[2] = { DEV_DEFAULT, DEV_DEFAULT };
     static uint32_t last_hue[2] = { 0, 0 };
 
@@ -244,7 +241,7 @@ static void led_task(void* arg)
         for (int i = 0; i < LED_BRIGHTNESS; i++) {
             led_set_hsv(0, LED_DEFAULT_HUE, 100, i);
             led_set_hsv(1, LED_DEFAULT_HUE, 100, i);
-            vTaskDelay(pdMS_TO_TICKS(100UL));
+            vTaskDelay(pdMS_TO_TICKS(30UL));
         }
     }
     while (1) {
@@ -253,28 +250,23 @@ static void led_task(void* arg)
                 led_set_hsv(i, 0, 0, 0);
                 continue;
             }
+            if (i == 1 && (get_tube_init_status(i) == 0))
+                ch = 0;
+            else
+                ch = i;
             switch (timer_dev[i].status) {
             case DEV_SLEEP:
                 last_status[i] = DEV_SLEEP;
-                if (i == 1 && (get_tube_init_status(i) == 0))
-                    led_set_hsv(0, 0, 0, 0);
-                else
-                    led_set_hsv(i, 0, 0, 0);
+                led_set_hsv(ch, 0, 0, 0);
                 break;
             case DEV_TIMINHG:
                 if (last_status[i] != DEV_TIMINHG) {
                     last_status[i] = DEV_TIMINHG;
-                    if (i == 1 && (get_tube_init_status(i) == 0))
-                        last_hue[0] = 150; /* green */
-                    else
-                        last_hue[i] = 150; /* green */
+                    last_hue[ch] = 150; /* green */
                 }
-                if (i == 1 && (get_tube_init_status(i) == 0))
-                    led_set_hsv(0, last_hue[0], 100, timer_dev[i].brightness); /* 30s green to red */
-                else
-                    led_set_hsv(i, last_hue[i], 100, timer_dev[i].brightness); /* 30s green to red */
-                if (last_hue[i] != 0)
-                    last_hue[i]--;
+                led_set_hsv(ch, last_hue[0], 100, timer_dev[i].brightness); /* 30s green to red */
+                if (last_hue[ch] != 0)
+                    last_hue[ch]--;
                 break;
             case DEV_TEMP:
                 last_status[i] = DEV_TEMP;
@@ -347,6 +339,6 @@ void app_main(void)
     xTaskCreate(timer_task, "timer_task", 2048, NULL, 9, NULL);
 
     /* Run LED */
-    xTaskCreate(led_task, "led_task", 2048, NULL, 8, NULL);
+    xTaskCreate(led_task, "led_task", 4096, NULL, 8, NULL);
     ESP_LOGI(TAG, "system initialized successfully");
 }
