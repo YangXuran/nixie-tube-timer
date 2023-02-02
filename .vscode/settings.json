@@ -40,7 +40,12 @@
     "complex": "c",
     "bitset": "c",
     "chrono": "c",
-    "algorithm": "c"
+    "algorithm": "c",
+    "esp_spp_api.h": "c",
+    "spp_task.h": "c",
+    "semphr.h": "c",
+    "spp_console_init.h": "c",
+    "set": "c"
   },
   "idf.openOcdConfigs": [
     "board/esp32-wrover-kit-3.3v.cfg"

@@ -1,6 +1,9 @@
+#include "argtable3/argtable3.h"
+#include "esp_console.h"
 #include "led_drv.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "spp_console_init.h"
 #include "temp_drv.h"
 #include "tube_drv.h"
 #include <driver/gpio.h>
@@ -19,6 +22,9 @@ static const char* TAG = "app_main";
 #define SW1_INPUT_GPIO 38
 
 #define TIMER_GRANULARITY_MS 10
+#define DEFAULT_TIMEOUT_TO_TEMP_S 30
+#define DEFAULT_TIMEOUT_TO_SLEEP_S 5 * 60
+
 #define TIMEOUT_TO_TEMP_S 30
 #define TIMEOUT_TO_SLEEP_S 5 * 60
 
@@ -37,10 +43,12 @@ enum DEV_STATUS {
 
 static struct {
     uint8_t led_on;
-    uint32_t timeout;
+    int32_t timer_timeout;
+    int32_t temper_timeout;
 } dev_setting = {
     .led_on = 1,
-    .timeout = 0
+    .timer_timeout = DEFAULT_TIMEOUT_TO_TEMP_S,
+    .temper_timeout = DEFAULT_TIMEOUT_TO_SLEEP_S
 };
 
 static struct {
@@ -293,6 +301,18 @@ static void read_temp_task(void* arg)
     }
 }
 
+int set_setting_args(void)
+{
+    return nvs_set_blob(nvs_fd, "setting", &dev_setting, sizeof(dev_setting));
+}
+
+void get_setting_args(void)
+{
+    size_t length = sizeof(dev_setting);
+    if (nvs_get_blob(nvs_fd, "setting", &dev_setting, &length) != ESP_OK)
+        ESP_LOGI(TAG, "no setting arg find, set default\n");
+}
+
 void app_main(void)
 {
     gptimer_handle_t gptimer = NULL;
@@ -326,8 +346,10 @@ void app_main(void)
     }
 
     ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_fd));
-    nvs_get_u8(nvs_fd, "led_on", &dev_setting.led_on);
-    ESP_LOGI(TAG, "get led setting:%s\n", dev_setting.led_on ? "on" : "off");
+    get_setting_args();
+
+    /* Init bt spp console */
+    spp_console_init();
 
     /* Run btn press check task */
     xTaskCreate(btn_push_task, "btn_task", 2048, NULL, 1, NULL);
@@ -341,4 +363,69 @@ void app_main(void)
     /* Run LED */
     xTaskCreate(led_task, "led_task", 4096, NULL, 8, NULL);
     ESP_LOGI(TAG, "system initialized successfully");
+}
+
+static struct {
+    struct arg_int* timer;
+    struct arg_int* heat;
+    struct arg_end* end;
+} set_timeout_args;
+
+static int do_set_timeout_cmd(int argc, char** argv)
+{
+    int nerrors = arg_parse(argc, argv, (void**)&set_timeout_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, set_timeout_args.end, argv[0]);
+        return 0;
+    }
+    if (set_timeout_args.timer->count) {
+        printf("set timer show timeout:%d, ok\n", set_timeout_args.timer->ival[0]);
+        dev_setting.timer_timeout = set_timeout_args.timer->ival[0];
+    }
+    if (set_timeout_args.heat->count) {
+        printf("set temperature show timeout:%d, ok\n", set_timeout_args.heat->ival[0]);
+        dev_setting.temper_timeout = set_timeout_args.heat->ival[0];
+    }
+    if (set_setting_args() == ESP_OK)
+        printf("save setting, ok\n");
+    else
+        printf("save setting, failed\n");
+    return 0;
+}
+
+void register_set_timeout_cmd(void)
+{
+    set_timeout_args.timer = arg_int0("t", "timer", "<sec>", "timer show timeout");
+    set_timeout_args.heat = arg_int0("h", "heat", "<sec>", "temperature show timeout");
+    set_timeout_args.end = arg_end(1);
+    const esp_console_cmd_t set_timeout_cmd = {
+        .command = "set_timeout",
+        .help = "set nixie tube show timeout",
+        .hint = NULL,
+        .func = &do_set_timeout_cmd,
+        .argtable = &set_timeout_args
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&set_timeout_cmd));
+}
+
+static int do_set_led_cmd(int argc, char** argv)
+{
+    dev_setting.led_on = dev_setting.led_on ? 0 : 1;
+    if (set_setting_args() == ESP_OK)
+        printf("save setting, ok\n");
+    else
+        printf("save setting, failed\n");
+    return 0;
+}
+
+void register_set_led_cmd(void)
+{
+    const esp_console_cmd_t set_led_cmd = {
+        .command = "set_led",
+        .help = "change led state",
+        .hint = NULL,
+        .func = &do_set_led_cmd,
+        .argtable = NULL
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&set_led_cmd));
 }
