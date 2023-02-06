@@ -223,6 +223,8 @@ void register_cmd(void)
     register_set_timeout_cmd();
     extern void register_set_led_cmd(void);
     register_set_led_cmd();
+    extern void register_set_default_cmd(void);
+    register_set_default_cmd();
 }
 
 void spp_console_init(void)

@@ -25,11 +25,8 @@ static const char* TAG = "app_main";
 #define DEFAULT_TIMEOUT_TO_TEMP_S 30
 #define DEFAULT_TIMEOUT_TO_SLEEP_S 5 * 60
 
-#define TIMEOUT_TO_TEMP_S 30
-#define TIMEOUT_TO_SLEEP_S 5 * 60
-
-#define LED_DEFAULT_HUE 270
-#define LED_BRIGHTNESS 100
+#define DEFAULT_LED_HUE 270
+#define DEFAULT_LED_BRIGHTNESS 100
 
 #define SHORT_PRESS_TIME (50 / 10)
 #define LONG_PRESS_TIME (3000 / 10)
@@ -43,13 +40,22 @@ enum DEV_STATUS {
 
 static struct {
     uint8_t led_on;
+    int32_t brightness;
+    int hue;
     int32_t timer_timeout;
     int32_t temper_timeout;
 } dev_setting = {
     .led_on = 1,
+    .brightness = DEFAULT_LED_BRIGHTNESS,
+    .hue = DEFAULT_LED_HUE,
     .timer_timeout = DEFAULT_TIMEOUT_TO_TEMP_S,
     .temper_timeout = DEFAULT_TIMEOUT_TO_SLEEP_S
 };
+
+#define TIMEOUT_TO_TEMP_S dev_setting.timer_timeout
+#define TIMEOUT_TO_SLEEP_S dev_setting.temper_timeout
+#define LED_BRIGHTNESS dev_setting.brightness
+#define LED_HUE dev_setting.hue
 
 static struct {
     gpio_num_t gpio;
@@ -57,7 +63,6 @@ static struct {
     uint32_t time;
     uint32_t timeout;
     uint32_t status;
-    uint32_t brightness;
     SemaphoreHandle_t sem;
 } timer_dev[] = {
     [0] = { .gpio = SW0_INPUT_GPIO,
@@ -65,20 +70,21 @@ static struct {
         .time = 0,
         .timeout = 0,
         .status = DEV_DEFAULT,
-        .brightness = LED_BRIGHTNESS,
         .sem = NULL },
     [1] = { .gpio = SW1_INPUT_GPIO,
         .cnt = 0,
         .time = 0,
         .timeout = 0,
         .status = DEV_DEFAULT,
-        .brightness = LED_BRIGHTNESS,
         .sem = NULL },
 };
 
 static float temp;
 static nvs_handle_t nvs_fd;
 static SemaphoreHandle_t btn_event_sem = NULL;
+
+int set_setting_args(void);
+void get_setting_args(void);
 
 static void btn_irq_handler(void* arg)
 {
@@ -130,7 +136,7 @@ static void btn_push_task(void* arg)
                 ESP_LOGI(TAG, "btn long press");
                 dev_setting.led_on = dev_setting.led_on ? 0 : 1;
                 ESP_LOGI(TAG, "led status change to %s", dev_setting.led_on ? "on" : "off");
-                nvs_set_u8(nvs_fd, "led_on", dev_setting.led_on);
+                set_setting_args();
             case 1:
                 ESP_LOGI(TAG, "btn short press");
                 timer_dev[0].status = DEV_TEMP;
@@ -247,8 +253,8 @@ static void led_task(void* arg)
     led_init();
     if (dev_setting.led_on) {
         for (int i = 0; i < LED_BRIGHTNESS; i++) {
-            led_set_hsv(0, LED_DEFAULT_HUE, 100, i);
-            led_set_hsv(1, LED_DEFAULT_HUE, 100, i);
+            led_set_hsv(0, LED_HUE, 100, i);
+            led_set_hsv(1, LED_HUE, 100, i);
             vTaskDelay(pdMS_TO_TICKS(30UL));
         }
     }
@@ -272,7 +278,7 @@ static void led_task(void* arg)
                     last_status[i] = DEV_TIMINHG;
                     last_hue[ch] = 150; /* green */
                 }
-                led_set_hsv(ch, last_hue[0], 100, timer_dev[i].brightness); /* 30s green to red */
+                led_set_hsv(ch, last_hue[0], 100, LED_BRIGHTNESS); /* 30s green to red */
                 if (last_hue[ch] != 0)
                     last_hue[ch]--;
                 break;
@@ -281,7 +287,7 @@ static void led_task(void* arg)
                 if (i == 1 && (get_tube_init_status(i) == 0))
                     continue;
                 else
-                    led_set_hsv(i, LED_DEFAULT_HUE, 100, timer_dev[i].brightness); /* 30s green to red */
+                    led_set_hsv(i, LED_HUE, 100, LED_BRIGHTNESS); /* 30s green to red */
                 break;
             default:
                 last_status[i] = DEV_DEFAULT;
@@ -311,6 +317,11 @@ void get_setting_args(void)
     size_t length = sizeof(dev_setting);
     if (nvs_get_blob(nvs_fd, "setting", &dev_setting, &length) != ESP_OK)
         ESP_LOGI(TAG, "no setting arg find, set default\n");
+}
+
+int set_seting_default(void)
+{
+    return nvs_erase_key(nvs_fd, "setting");
 }
 
 void app_main(void)
@@ -408,9 +419,28 @@ void register_set_timeout_cmd(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&set_timeout_cmd));
 }
 
+static struct {
+    struct arg_int* led_on;
+    struct arg_int* brightness;
+    struct arg_end* end;
+} set_led_args;
+
 static int do_set_led_cmd(int argc, char** argv)
 {
-    dev_setting.led_on = dev_setting.led_on ? 0 : 1;
+    int nerrors = arg_parse(argc, argv, (void**)&set_led_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, set_led_args.end, argv[0]);
+        return 0;
+    }
+    if (set_led_args.led_on->count) {
+        printf("set led status:%s, ok\n", set_led_args.led_on->ival[0] ? "on" : "off");
+        dev_setting.led_on = set_led_args.led_on->ival[0];
+    }
+    if (set_led_args.brightness->count) {
+        printf("set led brightness:%d, ok\n", set_led_args.brightness->ival[0]);
+        dev_setting.brightness = set_led_args.brightness->ival[0];
+    }
+
     if (set_setting_args() == ESP_OK)
         printf("save setting, ok\n");
     else
@@ -420,12 +450,36 @@ static int do_set_led_cmd(int argc, char** argv)
 
 void register_set_led_cmd(void)
 {
+    set_led_args.led_on = arg_int0("s", "switch", "<1/0>", "set LED on or off");
+    set_led_args.brightness = arg_int0("b", "brightness", "<0~100>", "set LED brightness");
+    set_led_args.end = arg_end(1);
     const esp_console_cmd_t set_led_cmd = {
         .command = "set_led",
         .help = "change led state",
         .hint = NULL,
         .func = &do_set_led_cmd,
-        .argtable = NULL
+        .argtable = &set_led_args
     };
     ESP_ERROR_CHECK(esp_console_cmd_register(&set_led_cmd));
+}
+
+static int do_set_default_cmd(int argc, char** argv)
+{
+    if (set_seting_default() == ESP_OK)
+        printf("set setting default, ok\n");
+    else
+        printf("set setting default, failed\n");
+    return 0;
+}
+
+void register_set_default_cmd(void)
+{
+    const esp_console_cmd_t set_setting_default_cmd = {
+        .command = "set_default",
+        .help = "set all setting to default",
+        .hint = NULL,
+        .func = &do_set_default_cmd,
+        .argtable = NULL
+    };
+    ESP_ERROR_CHECK(esp_console_cmd_register(&set_setting_default_cmd));
 }
