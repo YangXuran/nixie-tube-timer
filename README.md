@@ -1,0 +1,1 @@
+You can find the hardware design file at [lceda](https://oshwhub.com/robertyang/nixie-timer)
